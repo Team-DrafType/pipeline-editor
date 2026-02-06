@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { generatePipeline, type AnalysisResult } from '../utils/pipelineGenerator';
+import { generatePipelineWithLLM } from '../utils/llmGenerator';
 import useFlowStore from '../store/useFlowStore';
 
 interface GeneratorModalProps {
@@ -56,21 +57,85 @@ export default function GeneratorModal({ open, onClose }: GeneratorModalProps) {
   const [projectName, setProjectName] = useState('');
   const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
   const [generated, setGenerated] = useState(false);
+  const [apiKey, setApiKey] = useState(() => localStorage.getItem('pipeline-editor-api-key') || '');
+  const [mode, setMode] = useState<'claude-code' | 'llm' | 'keyword'>('claude-code');
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [jsonInput, setJsonInput] = useState('');
   const loadPreset = useFlowStore((s) => s.loadPreset);
 
   if (!open) return null;
 
-  const handleGenerate = () => {
+  const handleGenerate = async () => {
+    setError(null);
+
+    if (mode === 'claude-code') {
+      if (!jsonInput.trim()) return;
+      try {
+        const jsonMatch = jsonInput.match(/\{[\s\S]*\}/);
+        if (!jsonMatch) throw new Error('JSON 형식을 찾을 수 없습니다.');
+
+        const parsed = JSON.parse(jsonMatch[0]) as {
+          name?: string;
+          description?: string;
+          nodes: { agentType: string; model?: string; prompt?: string }[];
+          edges?: [number, number][];
+        };
+
+        if (!parsed.nodes || !Array.isArray(parsed.nodes)) {
+          throw new Error('"nodes" 배열이 필요합니다.');
+        }
+
+        const pipeline = {
+          id: 'imported',
+          name: parsed.name || '가져온 파이프라인',
+          description: parsed.description || '',
+          nodes: parsed.nodes.map(n => ({
+            agentType: n.agentType,
+            model: undefined,
+            prompt: n.prompt || '',
+          })),
+          edges: (parsed.edges || []).filter(
+            ([s, t]) => s >= 0 && s < parsed.nodes.length && t >= 0 && t < parsed.nodes.length && s !== t
+          ),
+        };
+
+        loadPreset(pipeline);
+        setGenerated(true);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'JSON 파싱 실패');
+      }
+      return;
+    }
+
     if (!description.trim()) return;
-    const result = generatePipeline(description, projectName || undefined);
-    setAnalysis(result.analysis);
-    loadPreset(result.pipeline);
-    setGenerated(true);
+
+    if (mode === 'llm' && apiKey.trim()) {
+      setIsLoading(true);
+      try {
+        // API 키 저장
+        localStorage.setItem('pipeline-editor-api-key', apiKey);
+        const result = await generatePipelineWithLLM(apiKey, description, projectName || undefined);
+        loadPreset(result.pipeline);
+        setGenerated(true);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'LLM 호출 실패. API 키를 확인하세요.');
+      } finally {
+        setIsLoading(false);
+      }
+    } else {
+      // 기존 키워드 방식 fallback
+      const result = generatePipeline(description, projectName || undefined);
+      setAnalysis(result.analysis);
+      loadPreset(result.pipeline);
+      setGenerated(true);
+    }
   };
 
   const handleClose = () => {
     setGenerated(false);
     setAnalysis(null);
+    setError(null);
     onClose();
   };
 
@@ -117,39 +182,146 @@ export default function GeneratorModal({ open, onClose }: GeneratorModalProps) {
             />
           </div>
 
-          {/* Description */}
+          {/* 생성 모드 선택 */}
           <div>
             <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5">
-              프로젝트 / 작업 설명
+              생성 모드
             </label>
-            <textarea
-              value={description}
-              onChange={(e) => { setDescription(e.target.value); setGenerated(false); setAnalysis(null); }}
-              placeholder="구현하려는 기능, 프로젝트 목적, 기술 스택, 요구사항 등을 자유롭게 작성하세요.&#10;&#10;예: React + TypeScript 기반 대시보드 앱에 사용자 인증 기능을 추가하고 싶어.&#10;JWT 기반 로그인/회원가입, 보안 검토, 테스트도 필요해."
-              className="w-full h-36 px-3 py-2 rounded-md bg-[#0f172a] border border-slate-700 text-sm text-slate-300 placeholder-slate-600 resize-none focus:outline-none focus:border-indigo-500 transition-colors"
-            />
-          </div>
-
-          {/* Example prompts */}
-          <div>
-            <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5">
-              예시 (클릭하여 입력)
-            </label>
-            <div className="flex flex-wrap gap-1.5">
-              {EXAMPLE_PROMPTS.map((ex, i) => (
-                <button
-                  key={i}
-                  onClick={() => handleExample(ex)}
-                  className="px-2 py-1 rounded-md bg-[#0f172a] border border-slate-700 text-[10px] text-slate-400 hover:text-slate-200 hover:border-slate-500 transition-colors truncate max-w-[280px]"
-                >
-                  {ex}
-                </button>
-              ))}
+            <div className="flex gap-1.5">
+              <button
+                onClick={() => { setMode('claude-code'); setGenerated(false); setAnalysis(null); setError(null); }}
+                className={`flex-1 py-1.5 px-3 rounded-md text-xs font-medium transition-all border ${
+                  mode === 'claude-code'
+                    ? 'bg-indigo-500/20 text-indigo-300 border-indigo-500/30'
+                    : 'bg-transparent text-slate-400 border-slate-700 hover:text-slate-300'
+                }`}
+              >
+                Claude Code
+              </button>
+              <button
+                onClick={() => { setMode('llm'); setGenerated(false); setAnalysis(null); setError(null); }}
+                className={`flex-1 py-1.5 px-3 rounded-md text-xs font-medium transition-all border ${
+                  mode === 'llm'
+                    ? 'bg-violet-500/20 text-violet-300 border-violet-500/30'
+                    : 'bg-transparent text-slate-400 border-slate-700 hover:text-slate-300'
+                }`}
+              >
+                API Key
+              </button>
+              <button
+                onClick={() => { setMode('keyword'); setGenerated(false); setAnalysis(null); setError(null); }}
+                className={`flex-1 py-1.5 px-3 rounded-md text-xs font-medium transition-all border ${
+                  mode === 'keyword'
+                    ? 'bg-amber-500/20 text-amber-300 border-amber-500/30'
+                    : 'bg-transparent text-slate-400 border-slate-700 hover:text-slate-300'
+                }`}
+              >
+                키워드 분석
+              </button>
             </div>
           </div>
 
+          {/* Claude Code 모드 UI */}
+          {mode === 'claude-code' && (
+            <>
+              {/* 안내 */}
+              <div className="rounded-lg bg-indigo-500/10 border border-indigo-500/20 p-3">
+                <p className="text-xs text-indigo-300 font-medium mb-2">사용 방법</p>
+                <ol className="text-[11px] text-slate-400 space-y-1 list-decimal list-inside">
+                  <li>Claude Code에게 원하는 파이프라인을 설명하세요</li>
+                  <li>아래 형식의 JSON을 요청하세요</li>
+                  <li>받은 JSON을 아래에 붙여넣고 "로드" 버튼을 누르세요</li>
+                </ol>
+                <div className="mt-2 p-2 rounded bg-[#0f172a] border border-slate-700">
+                  <code className="text-[10px] text-slate-500 whitespace-pre">{`{
+  "name": "파이프라인 이름",
+  "nodes": [
+    { "agentType": "explore", "prompt": "..." },
+    { "agentType": "executor", "prompt": "..." }
+  ],
+  "edges": [[0, 1]]
+}`}</code>
+                </div>
+              </div>
+
+              {/* JSON 입력 */}
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5">
+                  파이프라인 JSON
+                </label>
+                <textarea
+                  value={jsonInput}
+                  onChange={(e) => { setJsonInput(e.target.value); setGenerated(false); setError(null); }}
+                  placeholder='Claude Code에서 받은 JSON을 붙여넣으세요...'
+                  className="w-full h-48 px-3 py-2 rounded-md bg-[#0f172a] border border-slate-700 text-xs text-slate-300 placeholder-slate-600 resize-none focus:outline-none focus:border-indigo-500 transition-colors font-mono"
+                />
+              </div>
+            </>
+          )}
+
+          {/* API Key 입력 (LLM 모드일 때만) */}
+          {mode === 'llm' && (
+            <div>
+              <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5">
+                Anthropic API Key
+              </label>
+              <input
+                type="password"
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                placeholder="sk-ant-api03-..."
+                className="w-full px-3 py-2 rounded-md bg-[#0f172a] border border-slate-700 text-sm text-slate-300 placeholder-slate-600 focus:outline-none focus:border-violet-500 transition-colors font-mono"
+              />
+              <p className="text-[10px] text-slate-600 mt-1">
+                API 키는 브라우저 localStorage에 저장됩니다. 서버로 전송되지 않습니다.
+              </p>
+            </div>
+          )}
+
+          {/* Description (Claude Code 모드가 아닐 때만) */}
+          {mode !== 'claude-code' && (
+            <>
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5">
+                  프로젝트 / 작업 설명
+                </label>
+                <textarea
+                  value={description}
+                  onChange={(e) => { setDescription(e.target.value); setGenerated(false); setAnalysis(null); }}
+                  placeholder="구현하려는 기능, 프로젝트 목적, 기술 스택, 요구사항 등을 자유롭게 작성하세요.&#10;&#10;예: React + TypeScript 기반 대시보드 앱에 사용자 인증 기능을 추가하고 싶어.&#10;JWT 기반 로그인/회원가입, 보안 검토, 테스트도 필요해."
+                  className="w-full h-36 px-3 py-2 rounded-md bg-[#0f172a] border border-slate-700 text-sm text-slate-300 placeholder-slate-600 resize-none focus:outline-none focus:border-indigo-500 transition-colors"
+                />
+              </div>
+
+              {/* Example prompts */}
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5">
+                  예시 (클릭하여 입력)
+                </label>
+                <div className="flex flex-wrap gap-1.5">
+                  {EXAMPLE_PROMPTS.map((ex, i) => (
+                    <button
+                      key={i}
+                      onClick={() => handleExample(ex)}
+                      className="px-2 py-1 rounded-md bg-[#0f172a] border border-slate-700 text-[10px] text-slate-400 hover:text-slate-200 hover:border-slate-500 transition-colors truncate max-w-[280px]"
+                    >
+                      {ex}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </>
+          )}
+
+          {/* Error display */}
+          {error && (
+            <div className="rounded-lg bg-red-500/10 border border-red-500/30 p-3">
+              <span className="text-xs text-red-400">{error}</span>
+            </div>
+          )}
+
           {/* Analysis result */}
-          {analysis && (
+          {mode === 'keyword' && analysis && (
             <div className="rounded-lg bg-[#0f172a] border border-slate-700 p-3 space-y-2">
               <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-2">
                 분석 결과
@@ -227,17 +399,34 @@ export default function GeneratorModal({ open, onClose }: GeneratorModalProps) {
         {/* Footer */}
         <div className="flex items-center justify-between p-4 border-t border-slate-700">
           <span className="text-[11px] text-slate-500">
-            설명을 분석하여 최적의 에이전트 조합을 자동 생성합니다
+            {mode === 'claude-code'
+              ? 'Claude Code에서 받은 JSON을 붙여넣으세요'
+              : mode === 'llm'
+              ? 'Claude API로 최적의 파이프라인을 설계합니다'
+              : '키워드 분석으로 파이프라인을 자동 생성합니다'}
           </span>
           <button
             onClick={handleGenerate}
-            disabled={!description.trim() || generated}
+            disabled={
+              (mode === 'claude-code' && (!jsonInput.trim() || generated)) ||
+              (mode !== 'claude-code' && (!description.trim() || generated || isLoading)) ||
+              (mode === 'llm' && !apiKey.trim())
+            }
             className="flex items-center gap-1.5 px-4 py-2 rounded-md bg-amber-500/20 text-amber-300 text-xs font-medium hover:bg-amber-500/30 transition-colors border border-amber-500/30 disabled:opacity-40 disabled:cursor-not-allowed"
           >
-            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-            </svg>
-            {generated ? '생성 완료!' : '파이프라인 생성'}
+            {isLoading ? (
+              <>
+                <div className="w-3.5 h-3.5 border-2 border-amber-400 border-t-transparent rounded-full animate-spin" />
+                AI 생성 중...
+              </>
+            ) : (
+              <>
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                </svg>
+                {generated ? '로드 완료!' : mode === 'claude-code' ? '파이프라인 로드' : mode === 'llm' ? 'AI로 생성' : '키워드 분석으로 생성'}
+              </>
+            )}
           </button>
         </div>
       </div>
