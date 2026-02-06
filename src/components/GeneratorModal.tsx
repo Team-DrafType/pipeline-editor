@@ -62,6 +62,8 @@ export default function GeneratorModal({ open, onClose }: GeneratorModalProps) {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [jsonInput, setJsonInput] = useState('');
+  const [ccDescription, setCcDescription] = useState('');
+  const [ccCopied, setCcCopied] = useState(false);
   const loadPreset = useFlowStore((s) => s.loadPreset);
 
   if (!open) return null;
@@ -224,24 +226,45 @@ export default function GeneratorModal({ open, onClose }: GeneratorModalProps) {
           {/* Claude Code 모드 UI */}
           {mode === 'claude-code' && (
             <>
-              {/* 자동 로드 안내 */}
-              <div className="rounded-lg bg-indigo-500/10 border border-indigo-500/20 p-3">
-                <p className="text-xs text-indigo-300 font-medium mb-2">Claude Code 연동</p>
-                <p className="text-[11px] text-slate-400 leading-relaxed">
-                  Claude Code에게 원하는 작업을 설명하면, 파이프라인이 <strong className="text-indigo-300">자동으로 캔버스에 로드</strong>됩니다.
-                </p>
-                <div className="mt-3 p-2.5 rounded bg-[#0f172a] border border-slate-700">
-                  <p className="text-[10px] text-slate-500 mb-1.5">예시 - Claude Code에게 이렇게 말하세요:</p>
-                  <p className="text-[11px] text-slate-300 italic">"CSV 데이터 시각화 대시보드 파이프라인 만들어줘"</p>
-                  <p className="text-[11px] text-slate-300 italic mt-1">"JWT 기반 인증 시스템 구현 파이프라인 생성해줘"</p>
-                </div>
-                <div className="flex items-center gap-2 mt-3">
-                  <div className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
-                  <span className="text-[10px] text-green-400">자동 감지 활성화됨 (2초마다 확인)</span>
-                </div>
+              {/* 작업 설명 입력 */}
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5">
+                  작업 설명 (텍스트 / MD)
+                </label>
+                <textarea
+                  value={ccDescription}
+                  onChange={(e) => { setCcDescription(e.target.value); setCcCopied(false); }}
+                  placeholder={"구현하려는 기능, 프로젝트 목적 등을 자유롭게 작성하세요.\nMD 파일 내용을 붙여넣어도 됩니다.\n\n예: CSV 데이터 시각화 대시보드 구현.\npandas, matplotlib, plotly 사용.\nbar chart, line chart 생성."}
+                  className="w-full h-36 px-3 py-2 rounded-md bg-[#0f172a] border border-slate-700 text-sm text-slate-300 placeholder-slate-600 resize-none focus:outline-none focus:border-indigo-500 transition-colors"
+                />
               </div>
 
-              {/* 또는 JSON 직접 붙여넣기 (접이식) */}
+              {/* 복사 버튼 */}
+              <button
+                onClick={async () => {
+                  const prompt = `다음 작업에 맞는 에이전트 파이프라인을 만들어서 pipeline-editor에 로드해줘:\n\n${ccDescription}`;
+                  await navigator.clipboard.writeText(prompt);
+                  setCcCopied(true);
+                  setTimeout(() => setCcCopied(false), 3000);
+                }}
+                disabled={!ccDescription.trim()}
+                className="w-full py-2.5 rounded-md bg-indigo-500/20 text-indigo-300 text-xs font-medium hover:bg-indigo-500/30 transition-colors border border-indigo-500/30 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {ccCopied ? '복사됨! Claude Code에 붙여넣으세요' : '프롬프트를 클립보드에 복사'}
+              </button>
+
+              {/* 자동 감지 상태 */}
+              <div className="rounded-lg bg-[#0f172a] border border-slate-700 p-3">
+                <div className="flex items-center gap-2">
+                  <div className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
+                  <span className="text-[11px] text-green-400 font-medium">자동 감지 활성화됨</span>
+                </div>
+                <p className="text-[10px] text-slate-500 mt-1.5">
+                  Claude Code가 파이프라인을 생성하면 자동으로 캔버스에 로드됩니다. 이 창을 닫아도 동작합니다.
+                </p>
+              </div>
+
+              {/* JSON 직접 붙여넣기 (접이식) */}
               <details className="group">
                 <summary className="text-[11px] text-slate-500 cursor-pointer hover:text-slate-400 transition-colors">
                   또는 JSON 직접 붙여넣기 ▸
