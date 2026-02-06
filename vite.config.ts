@@ -2,6 +2,30 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import type { IncomingMessage, ServerResponse } from 'http'
+import { spawn, execSync } from 'child_process'
+import { existsSync, statSync, writeFileSync, unlinkSync, realpathSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
+
+// claude CLI 경로 찾기 + 실제 스크립트 경로 resolve (node-pty용)
+let CLAUDE_PATH = 'claude'
+let CLAUDE_SCRIPT = '' // node-pty에서 사용할 실제 .js 파일 경로
+try {
+  CLAUDE_PATH = execSync('which claude', { encoding: 'utf-8' }).trim()
+  CLAUDE_SCRIPT = realpathSync(CLAUDE_PATH)
+} catch {
+  const commonPaths = ['/opt/homebrew/bin/claude', '/usr/local/bin/claude', `${process.env.HOME}/.local/bin/claude`]
+  for (const p of commonPaths) {
+    if (existsSync(p)) {
+      CLAUDE_PATH = p
+      try { CLAUDE_SCRIPT = realpathSync(p) } catch { CLAUDE_SCRIPT = p }
+      break
+    }
+  }
+}
+import type { Server } from 'http'
+import type { Duplex } from 'stream'
+import { WebSocketServer, type WebSocket } from 'ws'
 
 const AVAILABLE_AGENTS = [
   'explore (haiku): 빠른 코드베이스 탐색',
@@ -38,36 +62,229 @@ const AVAILABLE_AGENTS = [
   'scientist-high (opus): 복잡한 연구/ML',
 ].join('\n- ')
 
-const SYSTEM_PROMPT = `당신은 Claude Code 서브에이전트 파이프라인 설계 전문가입니다.
-사용자의 작업 설명을 분석하여 최적의 에이전트 파이프라인을 설계합니다.
+function runClaudeCLI(prompt: string, cwd?: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const tmpFile = join(tmpdir(), `claude-prompt-${Date.now()}.txt`)
+    writeFileSync(tmpFile, prompt, 'utf-8')
 
-## 사용 가능한 에이전트
-- ${AVAILABLE_AGENTS}
+    const child = spawn('sh', ['-c', `cat "${tmpFile}" | claude -p`], {
+      cwd: cwd || process.cwd(),
+      timeout: 120000,
+      env: { ...process.env, LANG: 'en_US.UTF-8' },
+    })
 
-## 규칙
-1. 각 에이전트의 prompt는 해당 작업에 맞게 **구체적이고 상세하게** 작성하세요.
-2. 같은 단계(step)의 에이전트들은 병렬로 실행됩니다 - edges에서 동일 소스에서 연결.
-3. 비용 효율: 간단한 작업은 haiku, 복잡한 작업은 opus.
-4. 최소한의 에이전트로 최대 효과.
-5. prompt는 그 에이전트가 정확히 무엇을 해야 하는지 구체적으로.
-   BAD: "프로젝트 구조 분석"
-   GOOD: "src/ 디렉토리의 React 컴포넌트 구조 파악, API 호출 패턴 분석, 상태 관리 방식 확인"
+    let stdout = ''
+    let stderr = ''
 
-## 응답 형식 (JSON만, 다른 텍스트 없이)
-{
-  "id": "generated",
-  "name": "파이프라인 이름",
-  "description": "설명",
-  "nodes": [
-    { "agentType": "에이전트ID", "prompt": "구체적 지시" }
-  ],
-  "edges": [[소스인덱스, 타겟인덱스], ...]
-}`
+    child.stdout.on('data', (data: Buffer) => { stdout += data.toString() })
+    child.stderr.on('data', (data: Buffer) => { stderr += data.toString() })
+
+    child.on('error', (err: Error) => {
+      try { unlinkSync(tmpFile) } catch {}
+      reject(new Error(`claude CLI 실행 실패: ${err.message}. claude가 설치되어 있는지 확인하세요.`))
+    })
+
+    child.on('close', (code: number | null) => {
+      try { unlinkSync(tmpFile) } catch {}
+      if (code === 0) {
+        resolve(stdout)
+      } else {
+        reject(new Error(`claude CLI 오류 (code ${code}): ${stderr || stdout}`))
+      }
+    })
+  })
+}
 
 function pipelineGeneratorPlugin() {
   return {
     name: 'pipeline-generator-api',
-    configureServer(server: { middlewares: { use: (path: string, handler: (req: IncomingMessage, res: ServerResponse) => void) => void } }) {
+    configureServer(server: {
+      middlewares: { use: (path: string, handler: (req: IncomingMessage, res: ServerResponse) => void) => void }
+      httpServer: Server | null
+    }) {
+      // Interactive terminal WebSocket (node-pty + xterm.js)
+      const wss = new WebSocketServer({ noServer: true })
+
+      server.httpServer?.on('upgrade', (request: IncomingMessage, socket: Duplex, head: Buffer) => {
+        if (request.url === '/ws/terminal') {
+          wss.handleUpgrade(request, socket, head, (ws: WebSocket) => {
+            wss.emit('connection', ws, request)
+          })
+        }
+      })
+
+      wss.on('connection', (ws: WebSocket) => {
+        let ptyProcess: ReturnType<typeof import('node-pty').spawn> | null = null
+
+        ws.on('message', async (raw: Buffer) => {
+          try {
+            const msg = JSON.parse(raw.toString()) as {
+              type: 'start' | 'input' | 'resize'
+              projectDir?: string
+              prompt?: string
+              data?: string
+              cols?: number
+              rows?: number
+            }
+
+            if (msg.type === 'start') {
+              const nodePty = await import('node-pty-prebuilt-multiarch')
+
+              if (!msg.projectDir || !existsSync(msg.projectDir)) {
+                ws.send(JSON.stringify({ type: 'error', data: '유효하지 않은 디렉토리입니다.' }))
+                return
+              }
+
+              const args = msg.prompt ? [msg.prompt] : []
+              // claude는 node.js 스크립트이므로 node로 직접 실행 (posix_spawnp 회피)
+              const spawnCmd = CLAUDE_SCRIPT.endsWith('.js') ? process.execPath : CLAUDE_PATH
+              const spawnArgs = CLAUDE_SCRIPT.endsWith('.js') ? [CLAUDE_SCRIPT, ...args] : args
+              ptyProcess = nodePty.spawn(spawnCmd, spawnArgs, {
+                name: 'xterm-256color',
+                cwd: msg.projectDir,
+                env: { ...process.env, LANG: 'en_US.UTF-8' } as Record<string, string>,
+                cols: msg.cols || 120,
+                rows: msg.rows || 30,
+              })
+
+              ptyProcess.onData((data: string) => {
+                ws.send(JSON.stringify({ type: 'output', data }))
+              })
+
+              ptyProcess.onExit(({ exitCode, signal }: { exitCode: number; signal: number }) => {
+                ws.send(JSON.stringify({ type: 'exit', code: exitCode, signal }))
+              })
+            }
+
+            if (msg.type === 'input' && ptyProcess) {
+              ptyProcess.write(msg.data || '')
+            }
+
+            if (msg.type === 'resize' && ptyProcess) {
+              ptyProcess.resize(msg.cols || 120, msg.rows || 30)
+            }
+          } catch (err) {
+            ws.send(JSON.stringify({ type: 'error', data: err instanceof Error ? err.message : 'Unknown error' }))
+          }
+        })
+
+        ws.on('close', () => {
+          if (ptyProcess) {
+            ptyProcess.kill()
+            ptyProcess = null
+          }
+        })
+      })
+
+      // 폴더 선택 다이얼로그 (macOS osascript / Linux zenity)
+      server.middlewares.use('/api/pick-folder', (req: IncomingMessage, res: ServerResponse) => {
+        if (req.method !== 'POST') {
+          res.writeHead(405)
+          res.end()
+          return
+        }
+
+        const isMac = process.platform === 'darwin'
+        const isLinux = process.platform === 'linux'
+
+        let child: ReturnType<typeof spawn>
+        if (isMac) {
+          child = spawn('osascript', ['-e', 'POSIX path of (choose folder with prompt "프로젝트 폴더를 선택하세요")'])
+        } else if (isLinux) {
+          child = spawn('zenity', ['--file-selection', '--directory', '--title=프로젝트 폴더 선택'])
+        } else {
+          // Windows fallback
+          child = spawn('powershell', ['-Command', '[System.Reflection.Assembly]::LoadWithPartialName("System.Windows.Forms")|Out-Null;$f=New-Object System.Windows.Forms.FolderBrowserDialog;if($f.ShowDialog() -eq "OK"){$f.SelectedPath}'])
+        }
+
+        let stdout = ''
+        child.stdout.on('data', (data: Buffer) => { stdout += data.toString() })
+
+        child.on('close', (code: number | null) => {
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          if (code === 0 && stdout.trim()) {
+            res.end(JSON.stringify({ path: stdout.trim() }))
+          } else {
+            res.end(JSON.stringify({ path: null, cancelled: true }))
+          }
+        })
+
+        child.on('error', () => {
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ path: null, error: '폴더 선택 다이얼로그를 열 수 없습니다.' }))
+        })
+      })
+
+      // 파이프라인 실제 실행 엔드포인트 (SSE 스트리밍)
+      server.middlewares.use('/api/execute-pipeline', (req: IncomingMessage, res: ServerResponse) => {
+        if (req.method !== 'POST') {
+          res.writeHead(405)
+          res.end()
+          return
+        }
+
+        let body = ''
+        req.on('data', (chunk: Buffer) => { body += chunk.toString() })
+        req.on('end', () => {
+          try {
+            const { prompt, projectDir } = JSON.parse(body) as { prompt: string; projectDir: string }
+
+            if (!projectDir || !existsSync(projectDir) || !statSync(projectDir).isDirectory()) {
+              res.writeHead(400, { 'Content-Type': 'application/json' })
+              res.end(JSON.stringify({ error: '유효하지 않은 디렉토리입니다: ' + projectDir }))
+              return
+            }
+
+            res.writeHead(200, {
+              'Content-Type': 'text/event-stream',
+              'Cache-Control': 'no-cache',
+              'Connection': 'keep-alive',
+            })
+
+            const send = (type: string, text: string) => {
+              res.write(`data: ${JSON.stringify({ type, text })}\n\n`)
+            }
+
+            send('status', `프로젝트: ${projectDir}`)
+            send('status', 'Claude Code 실행 중...\n')
+
+            const tmpFile = join(tmpdir(), `claude-exec-${Date.now()}.txt`)
+            writeFileSync(tmpFile, prompt, 'utf-8')
+
+            const child = spawn('sh', ['-c', `cat "${tmpFile}" | claude -p`], {
+              cwd: projectDir,
+              timeout: 300000,
+              env: { ...process.env, LANG: 'en_US.UTF-8' },
+            })
+
+            child.stdout.on('data', (data: Buffer) => send('stdout', data.toString()))
+            child.stderr.on('data', (data: Buffer) => send('stderr', data.toString()))
+
+            child.on('close', (code: number | null) => {
+              try { unlinkSync(tmpFile) } catch {}
+              res.write(`data: ${JSON.stringify({ type: 'done', code })}\n\n`)
+              res.end()
+            })
+
+            child.on('error', (err: Error) => {
+              try { unlinkSync(tmpFile) } catch {}
+              send('error', `claude CLI 실행 실패: ${err.message}`)
+              res.end()
+            })
+
+            // 클라이언트 연결 끊김 감지 (res.on('close') 사용 - req.on('close')는 body 수신 후 즉시 발생)
+            res.on('close', () => {
+              if (!child.killed) child.kill('SIGTERM')
+              try { unlinkSync(tmpFile) } catch {}
+            })
+          } catch (err) {
+            res.writeHead(500, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({ error: err instanceof Error ? err.message : 'Unknown error' }))
+          }
+        })
+      })
+
+      // 파이프라인 생성 엔드포인트
       server.middlewares.use('/api/generate-pipeline', (req: IncomingMessage, res: ServerResponse) => {
         if (req.method !== 'POST') {
           res.writeHead(405)
@@ -81,27 +298,37 @@ function pipelineGeneratorPlugin() {
           try {
             const { description } = JSON.parse(body) as { description: string }
 
-            const apiKey = process.env.ANTHROPIC_API_KEY
-            if (!apiKey) {
-              res.writeHead(400, { 'Content-Type': 'application/json' })
-              res.end(JSON.stringify({ error: 'ANTHROPIC_API_KEY 환경변수가 설정되지 않았습니다.' }))
-              return
-            }
+            const prompt = `당신은 Claude Code 서브에이전트 파이프라인 설계 전문가입니다.
+사용자의 작업 설명을 분석하여 최적의 에이전트 파이프라인을 설계합니다.
 
-            const { default: Anthropic } = await import('@anthropic-ai/sdk')
-            const client = new Anthropic({ apiKey })
+## 사용 가능한 에이전트
+- ${AVAILABLE_AGENTS}
 
-            const response = await client.messages.create({
-              model: 'claude-sonnet-4-5-20250929',
-              max_tokens: 4096,
-              system: SYSTEM_PROMPT,
-              messages: [
-                { role: 'user', content: `다음 작업에 최적의 에이전트 파이프라인을 설계해주세요:\n\n${description}` },
-              ],
-            })
+## 규칙
+1. 각 에이전트의 prompt는 해당 작업에 맞게 **구체적이고 상세하게** 작성하세요.
+2. 같은 단계(step)의 에이전트들은 병렬로 실행됩니다 - edges에서 동일 소스에서 연결.
+3. 비용 효율: 간단한 작업은 haiku, 복잡한 작업은 opus.
+4. 최소한의 에이전트로 최대 효과.
+5. prompt는 그 에이전트가 정확히 무엇을 해야 하는지 구체적으로.
 
-            const text = response.content[0].type === 'text' ? response.content[0].text : ''
-            const jsonMatch = text.match(/\{[\s\S]*\}/)
+## 응답 형식 (반드시 JSON만 출력, 다른 텍스트 없이)
+{
+  "id": "generated",
+  "name": "파이프라인 이름",
+  "description": "설명",
+  "nodes": [
+    { "agentType": "에이전트ID", "prompt": "구체적 지시" }
+  ],
+  "edges": [[소스인덱스, 타겟인덱스], ...]
+}
+
+다음 작업에 최적의 에이전트 파이프라인을 설계해주세요:
+
+${description}`
+
+            const output = await runClaudeCLI(prompt)
+
+            const jsonMatch = output.match(/\{[\s\S]*\}/)
             if (!jsonMatch) throw new Error('JSON 파싱 실패')
 
             const pipeline = JSON.parse(jsonMatch[0])

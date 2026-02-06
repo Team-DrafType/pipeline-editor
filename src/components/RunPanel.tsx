@@ -1,9 +1,12 @@
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import useFlowStore from '../store/useFlowStore';
 import { analyzeGraph } from '../utils/graphAnalyzer';
 import { simulateExecution, createInitialState, type ExecutionState, type StepStatus } from '../utils/executionEngine';
 import { generateClaudeCodeScript, generateMermaidDiagram, generateRunnableScript } from '../utils/generateExecutionCode';
 import { exportToPrompt } from '../utils/exportPrompt';
+import { Terminal } from '@xterm/xterm';
+import { FitAddon } from '@xterm/addon-fit';
+import '@xterm/xterm/css/xterm.css';
 
 const STATUS_STYLES: Record<StepStatus, { bg: string; text: string; icon: string }> = {
   pending: { bg: 'bg-slate-700/30', text: 'text-slate-500', icon: '○' },
@@ -26,11 +29,19 @@ interface RunPanelProps {
 export default function RunPanel({ open, onClose }: RunPanelProps) {
   const { nodes, edges } = useFlowStore();
   const [execState, setExecState] = useState<ExecutionState | null>(null);
-  const [activeTab, setActiveTab] = useState<'simulate' | 'code' | 'prompt' | 'mermaid' | 'script'>('simulate');
+  const [activeTab, setActiveTab] = useState<'simulate' | 'code' | 'prompt' | 'mermaid' | 'script' | 'execute'>('simulate');
   const [taskDesc, setTaskDesc] = useState('');
   const [copied, setCopied] = useState(false);
   const [selectedAgent, setSelectedAgent] = useState<{ step: number; agent: number } | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+
+  // 대화형 터미널 상태
+  const [projectDir, setProjectDir] = useState('');
+  const [isExecuting, setIsExecuting] = useState(false);
+  const termContainerRef = useRef<HTMLDivElement>(null);
+  const xtermRef = useRef<Terminal | null>(null);
+  const fitAddonRef = useRef<FitAddon | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
 
   const steps = analyzeGraph(nodes, edges);
 
@@ -53,7 +64,142 @@ export default function RunPanel({ open, onClose }: RunPanelProps) {
     setTimeout(() => setCopied(false), 2000);
   };
 
-  if (!open) return null;
+  // 터미널 초기화 & 정리
+  useEffect(() => {
+    if (open && activeTab === 'execute' && termContainerRef.current && !xtermRef.current) {
+      // requestAnimationFrame으로 DOM이 완전히 렌더링된 후 초기화
+      requestAnimationFrame(() => {
+        if (!termContainerRef.current || xtermRef.current) return;
+
+        const term = new Terminal({
+          theme: {
+            background: '#0f172a',
+            foreground: '#cbd5e1',
+            cursor: '#818cf8',
+            selectionBackground: '#334155',
+          },
+          fontFamily: '"Fira Code", "Cascadia Code", Menlo, monospace',
+          fontSize: 12,
+          cursorBlink: true,
+          convertEol: true,
+        });
+        const fitAddon = new FitAddon();
+        term.loadAddon(fitAddon);
+        term.open(termContainerRef.current);
+        fitAddon.fit();
+
+        term.writeln('\x1b[90m프로젝트 경로를 입력하고 실행 버튼을 클릭하세요.\x1b[0m');
+        term.writeln('\x1b[90mClaude Code 대화형 터미널이 여기에 표시됩니다.\x1b[0m\r\n');
+
+        xtermRef.current = term;
+        fitAddonRef.current = fitAddon;
+      });
+    }
+  }, [open, activeTab]);
+
+  // 언마운트 시 정리
+  useEffect(() => {
+    return () => {
+      wsRef.current?.close();
+      xtermRef.current?.dispose();
+      xtermRef.current = null;
+      fitAddonRef.current = null;
+    };
+  }, []);
+
+  // 리사이즈 핸들러
+  useEffect(() => {
+    const handleResize = () => fitAddonRef.current?.fit();
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  // 대화형 실행 핸들러
+  const handleExecute = useCallback(() => {
+    if (!projectDir.trim() || isExecuting || steps.length === 0) return;
+
+    const term = xtermRef.current;
+    if (!term) return;
+
+    // 이전 세션 정리
+    wsRef.current?.close();
+    term.clear();
+    term.writeln('\x1b[32m[시작]\x1b[0m 파이프라인 실행 중...');
+    term.writeln(`\x1b[90m프로젝트: ${projectDir.trim()}\x1b[0m\r\n`);
+
+    const prompt = exportToPrompt(steps, taskDesc);
+    const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(`${protocol}//${location.host}/ws/terminal`);
+    wsRef.current = ws;
+
+    ws.onopen = () => {
+      setIsExecuting(true);
+      ws.send(JSON.stringify({
+        type: 'start',
+        projectDir: projectDir.trim(),
+        prompt,
+        cols: term.cols,
+        rows: term.rows,
+      }));
+    };
+
+    ws.onmessage = (e) => {
+      try {
+        const msg = JSON.parse(e.data);
+        if (msg.type === 'output') {
+          term.write(msg.data);
+        } else if (msg.type === 'exit') {
+          term.writeln(`\r\n\x1b[32m[완료]\x1b[0m 종료 코드: ${msg.code ?? 0}`);
+          setIsExecuting(false);
+        } else if (msg.type === 'error') {
+          term.writeln(`\r\n\x1b[31m[오류]\x1b[0m ${msg.data}`);
+          setIsExecuting(false);
+        }
+      } catch { /* ignore */ }
+    };
+
+    ws.onerror = () => {
+      term.writeln('\r\n\x1b[31m[오류]\x1b[0m WebSocket 연결 실패');
+      setIsExecuting(false);
+    };
+
+    ws.onclose = () => {
+      setIsExecuting(false);
+    };
+
+    // 사용자 키보드 입력 → PTY 전달
+    const inputDisposable = term.onData((data) => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'input', data }));
+      }
+    });
+
+    // 터미널 리사이즈 → PTY 리사이즈
+    const resizeDisposable = term.onResize(({ cols, rows }) => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'resize', cols, rows }));
+      }
+    });
+
+    // 연결 종료 시 리스너 정리
+    ws.addEventListener('close', () => {
+      inputDisposable.dispose();
+      resizeDisposable.dispose();
+    }, { once: true });
+  }, [projectDir, steps, taskDesc, isExecuting]);
+
+  const handleStopExecution = useCallback(() => {
+    wsRef.current?.close();
+    setIsExecuting(false);
+    xtermRef.current?.writeln('\r\n\x1b[33m[중단됨]\x1b[0m 사용자가 실행을 중단했습니다.');
+  }, []);
+
+  // 모달 다시 열릴 때 터미널 refit
+  useEffect(() => {
+    if (open && activeTab === 'execute' && fitAddonRef.current) {
+      setTimeout(() => fitAddonRef.current?.fit(), 50);
+    }
+  }, [open, activeTab]);
 
   const codeOutput = generateClaudeCodeScript(steps, taskDesc);
   const promptOutput = exportToPrompt(steps, taskDesc);
@@ -69,7 +215,7 @@ export default function RunPanel({ open, onClose }: RunPanelProps) {
     : 0;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose} style={{ display: open ? undefined : 'none' }}>
       <div className="w-[780px] max-h-[85vh] bg-[#1e293b] border border-slate-700 rounded-xl shadow-2xl flex flex-col" onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-slate-700">
@@ -102,6 +248,7 @@ export default function RunPanel({ open, onClose }: RunPanelProps) {
         <div className="flex gap-1 px-4 pt-3">
           {([
             ['simulate', '시뮬레이션'],
+            ['execute', '실제 실행'],
             ['prompt', '실행 프롬프트'],
             ['code', 'Task 코드'],
             ['mermaid', 'Mermaid'],
@@ -268,7 +415,73 @@ export default function RunPanel({ open, onClose }: RunPanelProps) {
             </div>
           )}
 
-          {activeTab !== 'simulate' && (
+          {activeTab === 'execute' && (
+            <div className="h-full flex flex-col">
+              {/* 프로젝트 경로 + 실행 버튼 */}
+              <div className="flex items-center gap-2 mb-3">
+                <input
+                  type="text"
+                  value={projectDir}
+                  onChange={(e) => setProjectDir(e.target.value)}
+                  placeholder="프로젝트 경로 (예: /Users/woojin/my-project)"
+                  className="flex-1 px-3 py-2 rounded-md bg-[#0f172a] border border-slate-700 text-sm text-slate-300 placeholder-slate-600 focus:outline-none focus:border-indigo-500 transition-colors font-mono text-xs"
+                />
+                <button
+                  onClick={async () => {
+                    try {
+                      const res = await fetch('/api/pick-folder', { method: 'POST' });
+                      const data = await res.json();
+                      if (data.path) setProjectDir(data.path);
+                    } catch { /* 사용자가 취소함 */ }
+                  }}
+                  disabled={isExecuting}
+                  className="px-2.5 py-2 rounded-md bg-slate-700/50 text-slate-400 hover:text-slate-200 hover:bg-slate-700 transition-colors border border-slate-700 disabled:opacity-40"
+                  title="폴더 선택"
+                >
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+                  </svg>
+                </button>
+                {!isExecuting ? (
+                  <button
+                    onClick={handleExecute}
+                    disabled={!projectDir.trim() || steps.length === 0}
+                    className="flex items-center gap-1.5 px-4 py-2 rounded-md bg-green-500/20 text-green-300 text-xs font-medium hover:bg-green-500/30 transition-colors border border-green-500/30 disabled:opacity-40 whitespace-nowrap"
+                  >
+                    <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
+                      <path d="M8 5v14l11-7z" />
+                    </svg>
+                    실행
+                  </button>
+                ) : (
+                  <button
+                    onClick={handleStopExecution}
+                    className="flex items-center gap-1.5 px-4 py-2 rounded-md bg-red-500/20 text-red-300 text-xs font-medium hover:bg-red-500/30 transition-colors border border-red-500/30 whitespace-nowrap"
+                  >
+                    <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
+                      <rect x="6" y="6" width="12" height="12" />
+                    </svg>
+                    중지
+                  </button>
+                )}
+                {isExecuting && (
+                  <div className="flex items-center gap-1.5">
+                    <div className="w-2.5 h-2.5 border-2 border-green-400 border-t-transparent rounded-full animate-spin" />
+                    <span className="text-[10px] text-green-400 whitespace-nowrap">실행 중</span>
+                  </div>
+                )}
+              </div>
+
+              {/* xterm.js 대화형 터미널 */}
+              <div
+                ref={termContainerRef}
+                className="flex-1 min-h-[350px] rounded-lg overflow-hidden border border-slate-700"
+                style={{ backgroundColor: '#0f172a' }}
+              />
+            </div>
+          )}
+
+          {activeTab !== 'simulate' && activeTab !== 'execute' && (
             <div className="h-full flex flex-col">
               <pre className="flex-1 min-h-[300px] max-h-[500px] overflow-auto p-4 rounded-lg bg-[#0f172a] border border-slate-700 text-xs text-slate-300 font-mono whitespace-pre-wrap">
                 {activeTab === 'code' && codeOutput}
@@ -283,9 +496,11 @@ export default function RunPanel({ open, onClose }: RunPanelProps) {
         {/* Footer */}
         <div className="flex items-center justify-between p-4 border-t border-slate-700">
           <span className="text-[11px] text-slate-500">
-            {activeTab === 'simulate' ? '시뮬레이션은 모델별 예상 응답 시간을 반영합니다' : '클립보드에 복사하여 Claude Code에서 사용하세요'}
+            {activeTab === 'simulate' && '시뮬레이션은 모델별 예상 응답 시간을 반영합니다'}
+            {activeTab === 'execute' && '대화형 터미널 - Claude Code와 직접 상호작용 (승인/거부/입력 가능)'}
+            {activeTab !== 'simulate' && activeTab !== 'execute' && '클립보드에 복사하여 Claude Code에서 사용하세요'}
           </span>
-          {activeTab !== 'simulate' && (
+          {activeTab !== 'simulate' && activeTab !== 'execute' && (
             <button
               onClick={() => handleCopy(
                 activeTab === 'code' ? codeOutput : activeTab === 'prompt' ? promptOutput : activeTab === 'script' ? scriptOutput : mermaidOutput
