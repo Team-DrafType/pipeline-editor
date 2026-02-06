@@ -224,38 +224,37 @@ export default function GeneratorModal({ open, onClose }: GeneratorModalProps) {
           {/* Claude Code 모드 UI */}
           {mode === 'claude-code' && (
             <>
-              {/* 안내 */}
+              {/* 자동 로드 안내 */}
               <div className="rounded-lg bg-indigo-500/10 border border-indigo-500/20 p-3">
-                <p className="text-xs text-indigo-300 font-medium mb-2">사용 방법</p>
-                <ol className="text-[11px] text-slate-400 space-y-1 list-decimal list-inside">
-                  <li>Claude Code에게 원하는 파이프라인을 설명하세요</li>
-                  <li>아래 형식의 JSON을 요청하세요</li>
-                  <li>받은 JSON을 아래에 붙여넣고 "로드" 버튼을 누르세요</li>
-                </ol>
-                <div className="mt-2 p-2 rounded bg-[#0f172a] border border-slate-700">
-                  <code className="text-[10px] text-slate-500 whitespace-pre">{`{
-  "name": "파이프라인 이름",
-  "nodes": [
-    { "agentType": "explore", "prompt": "..." },
-    { "agentType": "executor", "prompt": "..." }
-  ],
-  "edges": [[0, 1]]
-}`}</code>
+                <p className="text-xs text-indigo-300 font-medium mb-2">Claude Code 연동</p>
+                <p className="text-[11px] text-slate-400 leading-relaxed">
+                  Claude Code에게 원하는 작업을 설명하면, 파이프라인이 <strong className="text-indigo-300">자동으로 캔버스에 로드</strong>됩니다.
+                </p>
+                <div className="mt-3 p-2.5 rounded bg-[#0f172a] border border-slate-700">
+                  <p className="text-[10px] text-slate-500 mb-1.5">예시 - Claude Code에게 이렇게 말하세요:</p>
+                  <p className="text-[11px] text-slate-300 italic">"CSV 데이터 시각화 대시보드 파이프라인 만들어줘"</p>
+                  <p className="text-[11px] text-slate-300 italic mt-1">"JWT 기반 인증 시스템 구현 파이프라인 생성해줘"</p>
+                </div>
+                <div className="flex items-center gap-2 mt-3">
+                  <div className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
+                  <span className="text-[10px] text-green-400">자동 감지 활성화됨 (2초마다 확인)</span>
                 </div>
               </div>
 
-              {/* JSON 입력 */}
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5">
-                  파이프라인 JSON
-                </label>
-                <textarea
-                  value={jsonInput}
-                  onChange={(e) => { setJsonInput(e.target.value); setGenerated(false); setError(null); }}
-                  placeholder='Claude Code에서 받은 JSON을 붙여넣으세요...'
-                  className="w-full h-48 px-3 py-2 rounded-md bg-[#0f172a] border border-slate-700 text-xs text-slate-300 placeholder-slate-600 resize-none focus:outline-none focus:border-indigo-500 transition-colors font-mono"
-                />
-              </div>
+              {/* 또는 JSON 직접 붙여넣기 (접이식) */}
+              <details className="group">
+                <summary className="text-[11px] text-slate-500 cursor-pointer hover:text-slate-400 transition-colors">
+                  또는 JSON 직접 붙여넣기 ▸
+                </summary>
+                <div className="mt-2">
+                  <textarea
+                    value={jsonInput}
+                    onChange={(e) => { setJsonInput(e.target.value); setGenerated(false); setError(null); }}
+                    placeholder='파이프라인 JSON을 붙여넣으세요...'
+                    className="w-full h-36 px-3 py-2 rounded-md bg-[#0f172a] border border-slate-700 text-xs text-slate-300 placeholder-slate-600 resize-none focus:outline-none focus:border-indigo-500 transition-colors font-mono"
+                  />
+                </div>
+              </details>
             </>
           )}
 
@@ -400,7 +399,7 @@ export default function GeneratorModal({ open, onClose }: GeneratorModalProps) {
         <div className="flex items-center justify-between p-4 border-t border-slate-700">
           <span className="text-[11px] text-slate-500">
             {mode === 'claude-code'
-              ? 'Claude Code에서 받은 JSON을 붙여넣으세요'
+              ? 'Claude Code에게 말하면 자동으로 파이프라인이 로드됩니다'
               : mode === 'llm'
               ? 'Claude API로 최적의 파이프라인을 설계합니다'
               : '키워드 분석으로 파이프라인을 자동 생성합니다'}
