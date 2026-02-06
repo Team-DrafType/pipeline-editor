@@ -79,6 +79,112 @@ export function generateExecutionPrompt(steps: PipelineStep[], taskDescription: 
   return lines.join('\n');
 }
 
+export function generateRunnableScript(steps: PipelineStep[], taskDescription: string): string {
+  const lines: string[] = [];
+  const desc = taskDescription || 'Untitled Pipeline';
+
+  // Shebang + header comments
+  lines.push('#!/usr/bin/env node');
+  lines.push(`// Pipeline: ${desc}`);
+  lines.push(`// Generated: ${new Date().toISOString()}`);
+  lines.push('// npm install @anthropic-ai/sdk');
+  lines.push('');
+
+  // SDK import and client setup
+  lines.push("const Anthropic = require('@anthropic-ai/sdk');");
+  lines.push('const client = new Anthropic(); // ANTHROPIC_API_KEY 환경변수 자동 사용');
+  lines.push('');
+
+  // Model mapping
+  lines.push('const MODEL_MAP = {');
+  lines.push("  haiku: 'claude-haiku-4-5-20251001',");
+  lines.push("  sonnet: 'claude-sonnet-4-5-20250929',");
+  lines.push("  opus: 'claude-opus-4-6',");
+  lines.push('};');
+  lines.push('');
+
+  // Agent runner function with retry
+  lines.push('async function runAgent(type, model, prompt, context, retries = 2) {');
+  lines.push('  const systemPrompt = [');
+  lines.push('    `당신은 ${type} 에이전트입니다.`,');
+  lines.push("    '주어진 작업을 전문적으로 수행하고, 결과를 명확하게 보고하세요.',");
+  lines.push("    '이전 단계의 결과가 제공된 경우, 그 내용을 참고하여 작업을 수행하세요.',");
+  lines.push("  ].join(' ');");
+  lines.push('');
+  lines.push('  const userMessage = context');
+  lines.push("    ? `이전 단계 결과:\\n${context}\\n\\n---\\n\\n작업: ${prompt}`");
+  lines.push('    : prompt;');
+  lines.push('');
+  lines.push('  for (let attempt = 1; attempt <= retries; attempt++) {');
+  lines.push('    try {');
+  lines.push('      const response = await client.messages.create({');
+  lines.push('        model: MODEL_MAP[model] || MODEL_MAP.sonnet,');
+  lines.push('        max_tokens: 4096,');
+  lines.push('        system: systemPrompt,');
+  lines.push("        messages: [{ role: 'user', content: userMessage }],");
+  lines.push('      });');
+  lines.push("      return response.content[0].text;");
+  lines.push('    } catch (err) {');
+  lines.push('      console.error(`  [${type}] 시도 ${attempt}/${retries} 실패:`, err.message);');
+  lines.push('      if (attempt === retries) throw err;');
+  lines.push('      await new Promise((r) => setTimeout(r, 1000 * attempt));');
+  lines.push('    }');
+  lines.push('  }');
+  lines.push('}');
+  lines.push('');
+
+  // Main function
+  lines.push('async function main() {');
+  lines.push(`  console.log('='.repeat(60));`);
+  lines.push(`  console.log('Pipeline 실행 시작: ${desc.replace(/'/g, "\\'")}');`);
+  lines.push(`  console.log('='.repeat(60));`);
+  lines.push('  console.log();');
+  lines.push('  const startTime = Date.now();');
+  lines.push("  let context = '';");
+  lines.push('');
+
+  for (const step of steps) {
+    const stepVar = `step${step.step}Results`;
+    lines.push(`  // --- Step ${step.step} ${step.parallel && step.agents.length > 1 ? '(병렬 실행)' : '(순차 실행)'} ---`);
+    lines.push(`  console.log('[Step ${step.step}] 시작...');`);
+
+    if (step.parallel && step.agents.length > 1) {
+      lines.push(`  const ${stepVar} = await Promise.all([`);
+      for (const agent of step.agents) {
+        const prompt = (agent.prompt || `Step ${step.step}: ${agent.type} 작업 실행`).replace(/'/g, "\\'");
+        lines.push(`    runAgent('${agent.type}', '${agent.model}', '${prompt}', context),`);
+      }
+      lines.push('  ]);');
+    } else {
+      const agent = step.agents[0];
+      const prompt = (agent.prompt || `Step ${step.step}: ${agent.type} 작업 실행`).replace(/'/g, "\\'");
+      lines.push(`  const ${stepVar} = [await runAgent('${agent.type}', '${agent.model}', '${prompt}', context)];`);
+    }
+
+    lines.push('');
+    lines.push(`  ${stepVar}.forEach((result, i) => {`);
+    lines.push(`    console.log(\`  [Step ${step.step} - Agent \${i + 1}] 완료\`);`);
+    lines.push("    console.log('-'.repeat(40));");
+    lines.push('    console.log(result.slice(0, 500));');
+    lines.push("    console.log('-'.repeat(40));");
+    lines.push('  });');
+    lines.push(`  context = ${stepVar}.join('\\n---\\n');`);
+    lines.push('');
+  }
+
+  lines.push("  console.log('='.repeat(60));");
+  lines.push("  console.log(`Pipeline 완료! (${((Date.now() - startTime) / 1000).toFixed(1)}초)`);");
+  lines.push("  console.log('='.repeat(60));");
+  lines.push('}');
+  lines.push('');
+  lines.push('main().catch((err) => {');
+  lines.push("  console.error('Pipeline 실행 중 오류 발생:', err);");
+  lines.push('  process.exit(1);');
+  lines.push('});');
+
+  return lines.join('\n');
+}
+
 export function generateMermaidDiagram(steps: PipelineStep[]): string {
   const lines: string[] = ['graph TD'];
   let nodeCounter = 0;

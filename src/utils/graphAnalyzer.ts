@@ -76,3 +76,14 @@ export function analyzeGraph(nodes: Node[], edges: Edge[]): PipelineStep[] {
 
   return steps;
 }
+
+export function extractEdgeContexts(edges: Edge[]): Map<string, string> {
+  const contexts = new Map<string, string>();
+  for (const edge of edges) {
+    const label = (edge.data as { contextLabel?: string })?.contextLabel || (edge.label as string) || '';
+    if (label) {
+      contexts.set(`${edge.source}\u2192${edge.target}`, label);
+    }
+  }
+  return contexts;
+}

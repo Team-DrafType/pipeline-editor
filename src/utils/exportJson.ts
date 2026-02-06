@@ -10,7 +10,11 @@ export function exportToJson(steps: PipelineStep[], name?: string): Pipeline {
         type: a.type,
         model: a.model,
         prompt: a.prompt,
+        ...(a.contextFrom ? { contextFrom: a.contextFrom } : {}),
       })),
+      ...(step.contextOutputs && step.contextOutputs.length > 0
+        ? { contextOutputs: step.contextOutputs }
+        : {}),
     })),
   };
 }

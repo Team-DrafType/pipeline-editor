@@ -21,6 +21,7 @@ interface FlowState {
   nodes: Node[];
   edges: Edge[];
   selectedNodeId: string | null;
+  selectedEdgeId: string | null;
 
   onNodesChange: OnNodesChange;
   onEdgesChange: OnEdgesChange;
@@ -29,6 +30,8 @@ interface FlowState {
   updateNodeData: (id: string, data: Partial<AgentNodeData>) => void;
   deleteNode: (id: string) => void;
   setSelectedNode: (id: string | null) => void;
+  updateEdgeLabel: (edgeId: string, label: string) => void;
+  setSelectedEdge: (id: string | null) => void;
   loadPreset: (preset: PresetPipeline) => void;
   clear: () => void;
   setNodes: (nodes: Node[]) => void;
@@ -39,6 +42,7 @@ const useFlowStore = create<FlowState>((set, get) => ({
   nodes: [],
   edges: [],
   selectedNodeId: null,
+  selectedEdgeId: null,
 
   onNodesChange: (changes) => {
     set({ nodes: applyNodeChanges(changes, get().nodes) });
@@ -54,8 +58,13 @@ const useFlowStore = create<FlowState>((set, get) => ({
       id: `edge_${connection.source}_${connection.target}`,
       type: 'smoothstep',
       animated: true,
+      label: '',
+      labelStyle: { fill: '#94a3b8', fontSize: 10 },
+      labelBgStyle: { fill: '#1e293b', fillOpacity: 0.8 },
+      labelBgPadding: [4, 2] as [number, number],
       markerEnd: { type: MarkerType.ArrowClosed, color: '#64748b' },
       style: { stroke: '#64748b', strokeWidth: 2 },
+      data: { contextLabel: '' },
     };
     set({ edges: addEdge(edge, get().edges) });
   },
@@ -102,6 +111,20 @@ const useFlowStore = create<FlowState>((set, get) => ({
     set({ selectedNodeId: id });
   },
 
+  updateEdgeLabel: (edgeId, label) => {
+    set({
+      edges: get().edges.map((edge) =>
+        edge.id === edgeId
+          ? { ...edge, label, data: { ...edge.data, contextLabel: label } }
+          : edge
+      ),
+    });
+  },
+
+  setSelectedEdge: (id) => {
+    set({ selectedEdgeId: id, selectedNodeId: id ? null : get().selectedNodeId });
+  },
+
   loadPreset: (preset) => {
     nodeIdCounter = 0;
     const COLS = 2;
@@ -136,16 +159,21 @@ const useFlowStore = create<FlowState>((set, get) => ({
       target: nodes[tgtIdx].id,
       type: 'smoothstep',
       animated: true,
+      label: '',
+      labelStyle: { fill: '#94a3b8', fontSize: 10 },
+      labelBgStyle: { fill: '#1e293b', fillOpacity: 0.8 },
+      labelBgPadding: [4, 2] as [number, number],
       markerEnd: { type: MarkerType.ArrowClosed, color: '#64748b' },
       style: { stroke: '#64748b', strokeWidth: 2 },
+      data: { contextLabel: '' },
     }));
 
-    set({ nodes, edges, selectedNodeId: null });
+    set({ nodes, edges, selectedNodeId: null, selectedEdgeId: null });
   },
 
   clear: () => {
     nodeIdCounter = 0;
-    set({ nodes: [], edges: [], selectedNodeId: null });
+    set({ nodes: [], edges: [], selectedNodeId: null, selectedEdgeId: null });
   },
 
   setNodes: (nodes) => set({ nodes }),

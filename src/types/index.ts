@@ -47,7 +47,9 @@ export interface PipelineStep {
     type: string;
     model: ModelTier;
     prompt: string;
+    contextFrom?: string;
   }[];
+  contextOutputs?: string[];
 }
 
 export interface Pipeline {

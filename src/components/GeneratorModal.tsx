@@ -35,6 +35,22 @@ const COMPLEXITY_STYLES: Record<string, { label: string; color: string }> = {
   high: { label: '높음', color: 'text-red-400' },
 };
 
+const CATEGORY_LABELS: Record<string, string> = {
+  research: '리서치',
+  explore: '탐색',
+  frontend: '프론트엔드',
+  backend: '백엔드',
+  security: '보안',
+  test: '테스트',
+  data: '데이터',
+  docs: '문서화',
+  refactor: '리팩토링',
+  bugfix: '버그수정',
+  complex: '복합',
+  build: '빌드',
+  review: '리뷰',
+};
+
 export default function GeneratorModal({ open, onClose }: GeneratorModalProps) {
   const [description, setDescription] = useState('');
   const [projectName, setProjectName] = useState('');
@@ -63,6 +79,8 @@ export default function GeneratorModal({ open, onClose }: GeneratorModalProps) {
     setGenerated(false);
     setAnalysis(null);
   };
+
+  const maxScore = analysis ? Math.max(...Object.values(analysis.scores), 1) : 1;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={handleClose}>
@@ -147,6 +165,10 @@ export default function GeneratorModal({ open, onClose }: GeneratorModalProps) {
                     {COMPLEXITY_STYLES[analysis.complexity].label}
                   </span>
                 </div>
+                <div>
+                  <span className="text-slate-500">예상 에이전트: </span>
+                  <span className="text-slate-200 font-medium">{analysis.suggestedAgentCount}개</span>
+                </div>
               </div>
               <div className="flex flex-wrap gap-1 mt-1">
                 {analysis.needsExplore && <span className="px-1.5 py-0.5 rounded bg-green-500/15 text-green-400 text-[9px]">탐색</span>}
@@ -157,6 +179,35 @@ export default function GeneratorModal({ open, onClose }: GeneratorModalProps) {
                 {analysis.needsData && <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 text-[9px]">데이터</span>}
                 {analysis.needsDocs && <span className="px-1.5 py-0.5 rounded bg-gray-500/15 text-gray-400 text-[9px]">문서화</span>}
               </div>
+
+              {/* Category score bars */}
+              {analysis.scores && (
+                <div className="space-y-1 mt-2">
+                  {Object.entries(analysis.scores)
+                    .filter(([, v]) => v > 0)
+                    .sort(([, a], [, b]) => b - a)
+                    .map(([cat, score]) => (
+                      <div key={cat} className="flex items-center gap-2 text-[10px]">
+                        <span className="w-16 text-slate-500 text-right">{CATEGORY_LABELS[cat] || cat}</span>
+                        <div className="flex-1 h-1.5 bg-slate-700 rounded-full overflow-hidden">
+                          <div
+                            className="h-full bg-indigo-500 rounded-full transition-all duration-300"
+                            style={{ width: `${Math.min((score / maxScore) * 100, 100)}%` }}
+                          />
+                        </div>
+                        <span className="text-slate-400 w-6 text-right">{score}</span>
+                      </div>
+                    ))}
+                </div>
+              )}
+
+              {/* Phrase matches */}
+              {analysis.phraseMatches && analysis.phraseMatches.length > 0 && (
+                <div className="text-[10px] text-slate-500 mt-1">
+                  구문 매칭: {analysis.phraseMatches.join(', ')}
+                </div>
+              )}
+
               {analysis.detectedKeywords.length > 0 && (
                 <div className="text-[10px] text-slate-600 mt-1">
                   감지된 키워드: {analysis.detectedKeywords.slice(0, 10).join(', ')}

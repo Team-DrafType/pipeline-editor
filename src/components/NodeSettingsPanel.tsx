@@ -5,8 +5,88 @@ import type { AgentNodeData, ModelTier } from '../types';
 const MODEL_OPTIONS: ModelTier[] = ['haiku', 'sonnet', 'opus'];
 
 export default function NodeSettingsPanel() {
-  const { nodes, selectedNodeId, updateNodeData, deleteNode, setSelectedNode } = useFlowStore();
+  const { nodes, edges, selectedNodeId, selectedEdgeId, updateNodeData, updateEdgeLabel, deleteNode, setSelectedNode, setSelectedEdge } = useFlowStore();
   const selectedNode = nodes.find((n) => n.id === selectedNodeId);
+  const selectedEdge = edges.find((e) => e.id === selectedEdgeId);
+
+  if (selectedEdge) {
+    const sourceNode = nodes.find(n => n.id === selectedEdge.source);
+    const targetNode = nodes.find(n => n.id === selectedEdge.target);
+    const sourceData = sourceNode?.data as AgentNodeData | undefined;
+    const targetData = targetNode?.data as AgentNodeData | undefined;
+
+    return (
+      <div className="w-72 h-full bg-[#1e293b] border-l border-slate-700 flex flex-col overflow-hidden">
+        <div className="p-4 border-b border-slate-700">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <svg className="w-4 h-4 text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
+              </svg>
+              <h3 className="text-sm font-bold text-slate-200">데이터 흐름</h3>
+            </div>
+            <button onClick={() => setSelectedEdge(null)} className="text-slate-500 hover:text-slate-300 transition-colors">
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+          {/* Connection info */}
+          <div className="space-y-2">
+            <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wider">연결</label>
+            <div className="flex items-center gap-2 text-xs">
+              <span className="px-2 py-1 rounded bg-[#0f172a] border border-slate-700 text-slate-300">
+                {sourceData?.label || selectedEdge.source}
+              </span>
+              <svg className="w-4 h-4 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 8l4 4m0 0l-4 4m4-4H3" />
+              </svg>
+              <span className="px-2 py-1 rounded bg-[#0f172a] border border-slate-700 text-slate-300">
+                {targetData?.label || selectedEdge.target}
+              </span>
+            </div>
+          </div>
+
+          {/* Context label */}
+          <div>
+            <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-2">
+              전달 컨텍스트
+            </label>
+            <textarea
+              value={(selectedEdge.data as { contextLabel?: string })?.contextLabel || (selectedEdge.label as string) || ''}
+              onChange={(e) => updateEdgeLabel(selectedEdge.id, e.target.value)}
+              placeholder={'이 연결을 통해 전달되는 데이터를 설명하세요...\n예: 탐색 결과, 아키텍처 설계서, API 스펙'}
+              className="w-full h-24 px-3 py-2 rounded-md bg-[#0f172a] border border-slate-700 text-xs text-slate-300 placeholder-slate-600 resize-none focus:outline-none focus:border-indigo-500 transition-colors"
+            />
+            <p className="text-[10px] text-slate-600 mt-1">
+              비워두면 기본 데이터 전달 (이전 결과 전체 전달)
+            </p>
+          </div>
+
+          {/* Quick presets */}
+          <div>
+            <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-2">
+              빠른 설정
+            </label>
+            <div className="flex flex-wrap gap-1">
+              {['탐색 결과', '설계서', 'API 스펙', '코드 리뷰', '테스트 결과', '빌드 로그', '분석 리포트'].map(preset => (
+                <button
+                  key={preset}
+                  onClick={() => updateEdgeLabel(selectedEdge.id, preset)}
+                  className="px-2 py-0.5 rounded text-[10px] bg-[#0f172a] border border-slate-700 text-slate-400 hover:text-slate-200 hover:border-slate-500 transition-colors"
+                >
+                  {preset}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (!selectedNode) {
     return (

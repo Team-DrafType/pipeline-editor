@@ -1,6 +1,6 @@
 import type { PipelineStep } from '../types';
 
-export function exportToPrompt(steps: PipelineStep[], name?: string): string {
+export function exportToPrompt(steps: PipelineStep[], name?: string, edgeContexts?: Map<string, string>): string {
   if (steps.length === 0) return '// Empty pipeline - add some agents first!';
 
   const lines: string[] = [];
@@ -17,7 +17,8 @@ export function exportToPrompt(steps: PipelineStep[], name?: string): string {
   lines.push('## 파이프라인 단계');
   lines.push('');
 
-  for (const step of steps) {
+  for (let i = 0; i < steps.length; i++) {
+    const step = steps[i];
     const parallelTag = step.parallel ? ' [병렬]' : '';
     lines.push(`### ${step.step}단계${parallelTag}`);
     lines.push('');
@@ -27,7 +28,35 @@ export function exportToPrompt(steps: PipelineStep[], name?: string): string {
       if (agent.prompt) {
         lines.push(`  - 지시: "${agent.prompt}"`);
       }
+      if (agent.contextFrom) {
+        lines.push(`  - 입력 컨텍스트: ${agent.contextFrom}`);
+      }
     }
+
+    // Show context flow to next step if edgeContexts provided
+    if (edgeContexts && edgeContexts.size > 0 && i < steps.length - 1) {
+      const contextLabels: string[] = [];
+      for (const [key, value] of edgeContexts) {
+        // Check if this context flows from current step's agents
+        const parts = key.split('\u2192');
+        if (parts.length === 2) {
+          // We check by matching node IDs - the edgeContexts uses node IDs
+          contextLabels.push(value);
+        }
+      }
+      // Deduplicate
+      const unique = [...new Set(contextLabels)];
+      if (unique.length > 0) {
+        lines.push('');
+        lines.push(`> 다음 단계로 전달: ${unique.join(', ')}`);
+      }
+    }
+
+    if (step.contextOutputs && step.contextOutputs.length > 0) {
+      lines.push('');
+      lines.push(`> 출력 데이터: ${step.contextOutputs.join(', ')}`);
+    }
+
     lines.push('');
   }
 

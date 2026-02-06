@@ -22,6 +22,7 @@ export default function Canvas() {
     onConnect,
     addNode,
     setSelectedNode,
+    setSelectedEdge,
   } = useFlowStore();
 
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
@@ -51,13 +52,23 @@ export default function Canvas() {
   const onNodeClick = useCallback(
     (_: React.MouseEvent, node: { id: string }) => {
       setSelectedNode(node.id);
+      setSelectedEdge(null);
     },
-    [setSelectedNode]
+    [setSelectedNode, setSelectedEdge]
+  );
+
+  const onEdgeClick = useCallback(
+    (_: React.MouseEvent, edge: { id: string }) => {
+      setSelectedEdge(edge.id);
+      setSelectedNode(null);
+    },
+    [setSelectedEdge, setSelectedNode]
   );
 
   const onPaneClick = useCallback(() => {
     setSelectedNode(null);
-  }, [setSelectedNode]);
+    setSelectedEdge(null);
+  }, [setSelectedNode, setSelectedEdge]);
 
   return (
     <div ref={reactFlowWrapper} className="flex-1 h-full">
@@ -71,6 +82,7 @@ export default function Canvas() {
         onDrop={onDrop}
         onDragOver={onDragOver}
         onNodeClick={onNodeClick}
+        onEdgeClick={onEdgeClick}
         onPaneClick={onPaneClick}
         nodeTypes={nodeTypes}
         fitView

@@ -2,7 +2,7 @@ import { useState, useRef, useCallback } from 'react';
 import useFlowStore from '../store/useFlowStore';
 import { analyzeGraph } from '../utils/graphAnalyzer';
 import { simulateExecution, createInitialState, type ExecutionState, type StepStatus } from '../utils/executionEngine';
-import { generateClaudeCodeScript, generateMermaidDiagram } from '../utils/generateExecutionCode';
+import { generateClaudeCodeScript, generateMermaidDiagram, generateRunnableScript } from '../utils/generateExecutionCode';
 import { exportToPrompt } from '../utils/exportPrompt';
 
 const STATUS_STYLES: Record<StepStatus, { bg: string; text: string; icon: string }> = {
@@ -26,7 +26,7 @@ interface RunPanelProps {
 export default function RunPanel({ open, onClose }: RunPanelProps) {
   const { nodes, edges } = useFlowStore();
   const [execState, setExecState] = useState<ExecutionState | null>(null);
-  const [activeTab, setActiveTab] = useState<'simulate' | 'code' | 'prompt' | 'mermaid'>('simulate');
+  const [activeTab, setActiveTab] = useState<'simulate' | 'code' | 'prompt' | 'mermaid' | 'script'>('simulate');
   const [taskDesc, setTaskDesc] = useState('');
   const [copied, setCopied] = useState(false);
   const [selectedAgent, setSelectedAgent] = useState<{ step: number; agent: number } | null>(null);
@@ -58,6 +58,7 @@ export default function RunPanel({ open, onClose }: RunPanelProps) {
   const codeOutput = generateClaudeCodeScript(steps, taskDesc);
   const promptOutput = exportToPrompt(steps, taskDesc);
   const mermaidOutput = generateMermaidDiagram(steps);
+  const scriptOutput = generateRunnableScript(steps, taskDesc);
 
   const totalAgents = steps.reduce((sum, s) => sum + s.agents.length, 0);
   const completedAgents = execState?.steps.reduce(
@@ -104,6 +105,7 @@ export default function RunPanel({ open, onClose }: RunPanelProps) {
             ['prompt', '실행 프롬프트'],
             ['code', 'Task 코드'],
             ['mermaid', 'Mermaid'],
+            ['script', 'Node.js 스크립트'],
           ] as const).map(([key, label]) => (
             <button
               key={key}
@@ -272,6 +274,7 @@ export default function RunPanel({ open, onClose }: RunPanelProps) {
                 {activeTab === 'code' && codeOutput}
                 {activeTab === 'prompt' && promptOutput}
                 {activeTab === 'mermaid' && mermaidOutput}
+                {activeTab === 'script' && scriptOutput}
               </pre>
             </div>
           )}
@@ -285,7 +288,7 @@ export default function RunPanel({ open, onClose }: RunPanelProps) {
           {activeTab !== 'simulate' && (
             <button
               onClick={() => handleCopy(
-                activeTab === 'code' ? codeOutput : activeTab === 'prompt' ? promptOutput : mermaidOutput
+                activeTab === 'code' ? codeOutput : activeTab === 'prompt' ? promptOutput : activeTab === 'script' ? scriptOutput : mermaidOutput
               )}
               className="px-4 py-2 rounded-md bg-indigo-500 text-white text-xs font-medium hover:bg-indigo-600 transition-colors"
             >
