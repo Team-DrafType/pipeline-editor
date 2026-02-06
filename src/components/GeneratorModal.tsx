@@ -239,30 +239,38 @@ export default function GeneratorModal({ open, onClose }: GeneratorModalProps) {
                 />
               </div>
 
-              {/* 복사 버튼 */}
+              {/* 생성 버튼 */}
               <button
                 onClick={async () => {
-                  const prompt = `다음 작업에 맞는 에이전트 파이프라인을 만들어서 pipeline-editor에 로드해줘:\n\n${ccDescription}`;
-                  await navigator.clipboard.writeText(prompt);
-                  setCcCopied(true);
-                  setTimeout(() => setCcCopied(false), 3000);
+                  if (!ccDescription.trim()) return;
+                  setIsLoading(true);
+                  setError(null);
+                  try {
+                    const res = await fetch('/api/generate-pipeline', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ description: ccDescription }),
+                    });
+                    const data = await res.json();
+                    if (!res.ok) throw new Error(data.error || '생성 실패');
+                    loadPreset(data);
+                    setGenerated(true);
+                  } catch (err) {
+                    setError(err instanceof Error ? err.message : '파이프라인 생성 실패');
+                  } finally {
+                    setIsLoading(false);
+                  }
                 }}
-                disabled={!ccDescription.trim()}
+                disabled={!ccDescription.trim() || isLoading || generated}
                 className="w-full py-2.5 rounded-md bg-indigo-500/20 text-indigo-300 text-xs font-medium hover:bg-indigo-500/30 transition-colors border border-indigo-500/30 disabled:opacity-40 disabled:cursor-not-allowed"
               >
-                {ccCopied ? '복사됨! Claude Code에 붙여넣으세요' : '프롬프트를 클립보드에 복사'}
+                {isLoading ? (
+                  <span className="flex items-center justify-center gap-2">
+                    <span className="w-3.5 h-3.5 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin" />
+                    AI가 파이프라인 설계 중...
+                  </span>
+                ) : generated ? '생성 완료! 닫고 캔버스를 확인하세요' : '파이프라인 생성'}
               </button>
-
-              {/* 자동 감지 상태 */}
-              <div className="rounded-lg bg-[#0f172a] border border-slate-700 p-3">
-                <div className="flex items-center gap-2">
-                  <div className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
-                  <span className="text-[11px] text-green-400 font-medium">자동 감지 활성화됨</span>
-                </div>
-                <p className="text-[10px] text-slate-500 mt-1.5">
-                  Claude Code가 파이프라인을 생성하면 자동으로 캔버스에 로드됩니다. 이 창을 닫아도 동작합니다.
-                </p>
-              </div>
 
               {/* JSON 직접 붙여넣기 (접이식) */}
               <details className="group">
